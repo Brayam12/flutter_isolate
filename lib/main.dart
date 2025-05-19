@@ -1,4 +1,5 @@
-import 'dart:html' as html; // Solo para web
+// ignore_for_file: depend_on_referenced_packages, avoid_web_libraries_in_flutter, deprecated_member_use
+
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -7,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'dart:html' as html;
 
 void main() {
   runApp(const MyApp());
@@ -17,12 +19,20 @@ String convertJsonToCsv(String jsonString) {
     final List<dynamic> jsonList = jsonDecode(jsonString);
     if (jsonList.isEmpty) return '';
 
-    final headers = jsonList.first.keys;
+    // Verificar si es una lista de mapas
+    if (jsonList.first is! Map) {
+      throw FormatException('El JSON no tiene el formato esperado (List<Map>)');
+    }
+
+    final headers = (jsonList.first as Map).keys;
     final csvBuffer = StringBuffer();
     csvBuffer.writeln(headers.join(','));
 
     for (var item in jsonList) {
-      final row = headers.map((key) => '"${item[key]?.toString().replaceAll('"', '""') ?? ''}"').join(',');
+      final row = headers.map((key) {
+        final value = item[key];
+        return '"${value?.toString().replaceAll('"', '""') ?? ''}"';
+      }).join(',');
       csvBuffer.writeln(row);
     }
 
@@ -46,11 +56,19 @@ class _MyAppState extends State<MyApp> {
 
   Future<String> convertInIsolate(String jsonString) async {
     if (kIsWeb) {
-      return convertJsonToCsv(jsonString); // En web ejecutamos en el hilo principal
+      return convertJsonToCsv(jsonString);
     } else {
       final p = ReceivePort();
-      await Isolate.spawn(_isolateEntry, [p.sendPort, jsonString]);
-      return await p.first as String;
+      try {
+        await Isolate.spawn(_isolateEntry, [p.sendPort, jsonString]);
+        final result = await p.first as String;
+        if (result.startsWith('ERROR:')) {
+          throw Exception(result);
+        }
+        return result;
+      } catch (e) {
+        throw Exception('Error en el isolate: $e');
+      }
     }
   }
 
@@ -70,6 +88,7 @@ class _MyAppState extends State<MyApp> {
       _loading = true;
       _jsonContent = null;
       _csvContent = null;
+      _csvFilePath = null;
     });
     
     try {
@@ -132,9 +151,6 @@ class _MyAppState extends State<MyApp> {
     final bytes = utf8.encode(csv);
     final blob = html.Blob([bytes]);
     final url = html.Url.createObjectUrlFromBlob(blob);
-    final anchor = html.AnchorElement(href: url)
-      ..setAttribute('download', 'output.csv')
-      ..click();
     html.Url.revokeObjectUrl(url);
   }
 
@@ -146,7 +162,7 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> shareCsv() async {
-    if (_csvFilePath == null || !File(_csvFilePath!).existsSync()) {
+    if (_csvFilePath == null || (!kIsWeb && !File(_csvFilePath!).existsSync())) {
       _showError('Archivo CSV no disponible');
       return;
     }
@@ -155,15 +171,19 @@ class _MyAppState extends State<MyApp> {
 
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message),
-    ),
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+      ),
     );
   }
-  
 
   void _showSuccess(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+      ),
     );
   }
 
@@ -173,7 +193,7 @@ class _MyAppState extends State<MyApp> {
       debugShowCheckedModeBanner: false,
       home: Scaffold(
         appBar: AppBar(
-          title: const Text('JSON to CSV Converter'),
+          title: const Text('Conversor JSON a CSV'),
           centerTitle: true,
         ),
         body: Padding(
@@ -207,7 +227,9 @@ class _MyAppState extends State<MyApp> {
         ElevatedButton.icon(
           icon: const Icon(Icons.transform),
           label: const Text('Convertir a CSV'),
-          onPressed: (_jsonContent == null || _loading) ? null : convertAndSaveCsv,
+          onPressed: (_jsonContent == null || _loading) 
+              ? null 
+              : () => convertAndSaveCsv(),
         ),
         if (_csvFilePath != null && !kIsWeb)
           ElevatedButton.icon(
